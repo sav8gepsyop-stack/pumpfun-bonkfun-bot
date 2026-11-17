@@ -1,0 +1,70 @@
+# AI trader settings. Every value here is a default you can tune; see
+# docs/ai-trader.md. Secrets never go in this file: ${VAR}s come from .env.
+
+name: "ai-trader"
+# paper: trade the live market with simulated fills, no SOL spent (default).
+# live: real transactions. Also needs AI_TRADER_LIVE in .env; see the docs.
+mode: "paper"
+data_dir: "data"
+
+feed:
+  wss_endpoint: "${SOLANA_NODE_WSS_ENDPOINT}"
+  rpc_endpoint: "${SOLANA_NODE_RPC_ENDPOINT}"
+  record: true          # save the feed to data/feed/ for backtests
+  nats_url: null        # e.g. "nats://127.0.0.1:4222" to publish events
+
+strategy:
+  min_age_s: 20         # watch a coin this long before judging it
+  max_age_s: 600
+  rescore_every_s: 10
+  min_trades: 12
+  min_unique_buyers: 8
+  buy_threshold: 68     # 0-100 score needed to buy
+  max_top10_share: 0.45
+  max_dev_buy_share: 0.12
+  reject_if_creator_sold: true
+  reject_mayhem: true
+  min_progress: 0.03
+  max_progress: 0.85
+  stop_loss: 0.25       # sell everything at -25%
+  take_profit: 0.60     # at +60% sell half...
+  take_profit_sell_fraction: 0.5
+  trailing_stop: 0.22   # ...then sell the rest 22% below the peak
+  max_hold_s: 900
+  stale_after_s: 90
+  exit_on_creator_sell: true
+
+risk:
+  paper_bankroll_sol: 2.0
+  max_position_sol: 0.1
+  max_position_pct: 0.05
+  min_position_sol: 0.01
+  max_open_positions: 3
+  max_total_exposure_sol: 0.3
+  max_daily_loss_sol: 0.3
+  max_trades_per_day: 40
+  max_consecutive_losses: 4
+  cooldown_s: 1800
+  reserve_sol: 0.05
+  buy_slippage: 0.15
+  sell_slippage: 0.25
+
+llm:
+  enabled: false        # true + ANTHROPIC_API_KEY in .env to add Claude's opinion
+  model: "claude-opus-5-5"
+  effort: "low"
+  weight: 0.35
+  min_heuristic_score: 55
+  max_calls_per_hour: 120
+  timeout_s: 20
+  langfuse: true
+
+costs:                  # what paper fills charge, to match live
+  fee_bps: 125
+  tx_cost_sol: 0.00003
+  latency_s: 1.5
+
+gui:
+  host: "127.0.0.1"
+  port: 8787
+  access_token: null

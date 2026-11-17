@@ -179,3 +179,5 @@ cython_debug/
 trades/trades.log
 # Mac OS X
 .DS_Store
+# AI trader: recordings, DuckDB stores, reports and the kill file
+data/
