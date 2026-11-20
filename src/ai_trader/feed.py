@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import websockets
+import websockets.exceptions
 from tenacity import (
     AsyncRetrying,
     retry_if_exception_type,
