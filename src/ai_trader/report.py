@@ -62,6 +62,7 @@ def compute(store: Store, run_id: str, start_cash: float) -> dict[str, Any]:
     buy_scores = store.frame(
         "SELECT mint, max(score) AS score, "
         "bool_or(reason LIKE '%fallback%') AS fallback, "
+        "bool_or(reason LIKE '%mayhem%') AS mayhem, "
         "max(TRY_CAST(json_extract(features, '$.social_score') AS DOUBLE)) AS social "
         "FROM decisions WHERE run_id = ? AND action = 'buy' GROUP BY mint",
         [run_id],
@@ -146,7 +147,9 @@ def compute(store: Store, run_id: str, start_cash: float) -> dict[str, Any]:
         )
 
     out["by_entry"] = split(
-        pl.when(pl.col("fallback").fill_null(False))
+        pl.when(pl.col("mayhem").fill_null(False))
+        .then(pl.lit("mayhem scalp"))
+        .when(pl.col("fallback").fill_null(False))
         .then(pl.lit("fallback"))
         .otherwise(pl.lit("normal")),
         "entry",
@@ -252,7 +255,7 @@ def write(report: dict[str, Any], out_dir: Path, title: str) -> dict[str, Path]:
             for r in report["by_score"]
         ]
     for key, label, col in (
-        ("by_entry", "By entry type (do forced daily trades pay?)", "entry"),
+        ("by_entry", "By entry type (do forced daily trades and mayhem scalps pay?)", "entry"),
         ("by_social", "By social/trend score (do the signals help?)", "social_bucket"),
     ):
         if report.get(key):

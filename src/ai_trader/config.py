@@ -156,6 +156,28 @@ class LLMSettings(_Strict):
     langfuse: bool = True
 
 
+class MayhemSettings(_Strict):
+    """Paper experiment: quick scalps on mayhem-mode coins.
+
+    Mayhem coins have pump.fun's own agent trading them, so the usual
+    "organic demand" reading is distorted. Every trade still happens on the
+    curve the bot watches from launch, so they are fully tracked; this tries
+    short, small, tightly stopped trades on them, scored by the same model
+    (rug checks included) and tagged [mayhem] in the report.
+    """
+
+    enabled: bool = False
+    buy_threshold: float = 62
+    position_sol: float = 0.03
+    max_open: int = 1
+    take_profit: float = 0.15
+    stop_loss: float = 0.08
+    #: After +take_profit/2, sell everything this far below the peak.
+    trailing_stop: float = 0.06
+    max_hold_s: float = 180
+    stale_after_s: float = 30
+
+
 class SocialSettings(_Strict):
     """Social media and trend signals (see ai_trader/social.py)."""
 
@@ -208,6 +230,7 @@ class AITraderSettings(_Strict):
     risk: RiskSettings = Field(default_factory=RiskSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     social: SocialSettings = Field(default_factory=SocialSettings)
+    mayhem: MayhemSettings = Field(default_factory=MayhemSettings)
     costs: CostSettings = Field(default_factory=CostSettings)
     gui: GuiSettings = Field(default_factory=GuiSettings)
 

@@ -74,6 +74,17 @@ llm:
   timeout_s: 20
   langfuse: true
 
+mayhem:                 # paper experiment: quick scalps on mayhem-mode coins
+  enabled: true         # scored by the same model and rug checks; tagged [mayhem]
+  buy_threshold: 62
+  position_sol: 0.03    # small, separate from the main sizing
+  max_open: 1
+  take_profit: 0.15     # sell all at +15%...
+  stop_loss: 0.08       # ...or at -8%
+  trailing_stop: 0.06   # after +7.5%, sell 6% below the peak
+  max_hold_s: 180
+  stale_after_s: 30
+
 social:                 # social media and trend signals (ai_trader/social.py)
   enabled: true
   weight: 0.25          # share of the final score from socials/trends

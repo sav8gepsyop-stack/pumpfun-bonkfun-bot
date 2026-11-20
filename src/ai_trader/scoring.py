@@ -48,10 +48,12 @@ def _clip(x: float, lo: float = 0.0, hi: float = 1.0) -> float:
 class HeuristicScorer:
     def __init__(self, strategy: StrategySettings) -> None:
         self.s = strategy
+        #: Set when the mayhem scalp experiment is on: mayhem coins get scored.
+        self.allow_mayhem = False
 
     def reject(self, f: Features) -> str | None:
         s = self.s
-        if f.is_mayhem and s.reject_mayhem:
+        if f.is_mayhem and s.reject_mayhem and not self.allow_mayhem:
             return "mayhem-mode coin"
         if f.creator_sold and s.reject_if_creator_sold:
             return "creator has sold"

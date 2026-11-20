@@ -40,6 +40,8 @@ class Position:
     score: float
     tp_done: bool = False
     tp2_done: bool = False
+    #: Opened by the mayhem scalp experiment; exits use settings.mayhem.
+    mayhem: bool = False
     realized_sol: float = 0.0
     #: An order for this coin is waiting to fill; no new exit decisions until then.
     busy: bool = False
@@ -75,6 +77,7 @@ class Engine:
         self.tracker = MarketTracker()
         self.tracker.creators.load_rows(store.load_creators())
         self.scorer = EnsembleScorer(settings.strategy, settings.llm, settings.social)
+        self.scorer.heuristic.allow_mayhem = settings.mayhem.enabled
         #: Set by the runner for live feeds; backtests run without it.
         self.social: Any = None
         self.risk = RiskManager(settings.risk, settings.kill_file)
@@ -206,7 +209,11 @@ class Engine:
                 self.stats["rejected"] += 1
                 self._decide(now, coin, score, "reject", score.rejected, features)
                 return
-            threshold, fallback = self._threshold(now)
+            mh = self.s.mayhem
+            if coin.is_mayhem:
+                threshold, fallback = mh.buy_threshold, False
+            else:
+                threshold, fallback = self._threshold(now)
             if score.value < threshold:
                 self._decide(
                     now, coin, score, "pass", f"score {score.value:.0f}", features
@@ -226,10 +233,24 @@ class Engine:
                 exposure_sol=self._exposure(),
                 unrealized_sol=self._unrealized(),
             )
+            if coin.is_mayhem and not why_not:
+                open_mayhem = sum(p.mayhem for p in self.positions.values()) + sum(
+                    o.side == "buy" and o.reason.startswith("[mayhem]")
+                    for o in self.orders
+                )
+                if open_mayhem >= mh.max_open:
+                    why_not = f"{open_mayhem} mayhem scalp(s) open, the limit"
+                sol = min(sol, mh.position_sol)
             if why_not:
                 self._decide(now, coin, score, "blocked", why_not, features)
                 return
-            tag = " [fallback]" if score.value < self.s.strategy.buy_threshold else ""
+            if coin.is_mayhem:
+                score.reasons.insert(0, "[mayhem] scalp")
+                tag = " [mayhem]"
+            elif score.value < self.s.strategy.buy_threshold:
+                tag = " [fallback]"
+            else:
+                tag = ""
             self._decide(now, coin, score, "buy", f"{sol} SOL{tag}", features)
             self.orders.append(
                 Order(
@@ -306,7 +327,9 @@ class Engine:
         change = price / pos.entry_price - 1 if pos.entry_price else 0.0
         reason = None
         fraction = 1.0
-        if coin.completed:
+        if pos.mayhem:
+            reason = self._scalp_exit(pos, coin, now, change)
+        elif coin.completed:
             reason = "coin graduated"
         elif coin.creator_sold and st.exit_on_creator_sell:
             reason = "creator sold"
@@ -344,6 +367,30 @@ class Engine:
                 pos.tp_done = True
             self._sell(pos, now, tokens, reason)
             await self._process_orders(now)
+
+    def _scalp_exit(
+        self, pos: Position, coin: CoinState, now: float, change: float
+    ) -> str | None:
+        """Exits for the mayhem scalp experiment: small target, tight stops."""
+        mh = self.s.mayhem
+        peak_gain = pos.peak_price / pos.entry_price - 1 if pos.entry_price else 0.0
+        if coin.completed:
+            return "scalp: coin graduated"
+        if change <= -mh.stop_loss:
+            return f"scalp stop {change:+.0%}"
+        if (risk := self._rug_exit(coin, now)) is not None:
+            return "scalp " + risk
+        if change >= mh.take_profit:
+            return f"scalp take profit {change:+.0%}"
+        if peak_gain >= mh.take_profit / 2 and coin.price <= pos.peak_price * (
+            1 - mh.trailing_stop
+        ):
+            return f"scalp trailing stop {coin.price / pos.peak_price - 1:+.0%} from peak"
+        if now - pos.opened_at >= mh.max_hold_s:
+            return "scalp max hold"
+        if now - (coin.last_buy_at or pos.opened_at) >= mh.stale_after_s and change < 0:
+            return f"scalp: no buyers for {mh.stale_after_s:.0f}s"
+        return None
 
     def _rug_exit(self, coin: CoinState, now: float) -> str | None:
         """Get out early when the coin starts to look like a rug in progress."""
@@ -415,6 +462,7 @@ class Engine:
             peak_price=coin.price,
             score=order.score.value if order.score else 0.0,
             reasons=order.score.reasons if order.score else [],
+            mayhem=coin.is_mayhem,
         )
         self.positions[coin.mint] = pos
         self.tracker.pinned.add(coin.mint)

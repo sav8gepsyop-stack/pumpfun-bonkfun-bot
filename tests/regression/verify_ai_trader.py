@@ -290,6 +290,41 @@ def g_gui(tmp: Path) -> None:
     os.environ.pop("SOLANA_PRIVATE_KEY", None)
 
 
+def h_rug_and_mayhem(tmp: Path) -> None:
+    print("H. pre-rug signals and the mayhem scalp")
+    from ai_trader.engine import Position  # noqa: PLC0415
+    from ai_trader.market import rug_risk  # noqa: PLC0415
+
+    calm = rug_risk(0.0, 0.0, 0.0, 0.0, -1.0, False, 0.0, 0.15)
+    bundled = rug_risk(0.30, 0.0, 0.0, 0.0, 0.0, False, 0.0, 0.15)
+    dumping = rug_risk(0.08, 0.7, 0.0, 0.05, 2.0, False, 0.0, 0.2)
+    check(calm < 0.2, f"a calm coin has low rug risk ({calm:.2f})")
+    check(bundled > 0.55, f"a heavily bundled launch is risky ({bundled:.2f})")
+    check(dumping > 0.7, f"insiders and whales dumping triggers an exit ({dumping:.2f})")
+
+    s = AITraderSettings(data_dir=str(tmp))
+    e_off = Engine(s, PaperBroker(s), Store(tmp / "h1.duckdb"), inline_scoring=True)
+    check(not e_off.scorer.heuristic.allow_mayhem, "mayhem coins rejected by default")
+    s.mayhem.enabled = True
+    e = Engine(s, PaperBroker(s), Store(tmp / "h2.duckdb"), inline_scoring=True)
+    check(e.scorer.heuristic.allow_mayhem, "mayhem experiment lets them be scored")
+    coin = CoinState(mint="M", created_at=0.0, symbol="MAY", is_mayhem=True)
+    coin.last_buy_at = 100.0
+    price = coin.price
+
+    def pos(entry: float) -> Position:
+        return Position("M", "MAY", 100.0, 1, 0.03, entry, entry, 70, mayhem=True)
+
+    down = e._scalp_exit(pos(price / 0.9), coin, 101.0, 0.9 - 1)
+    up = e._scalp_exit(pos(price / 1.2), coin, 101.0, 1.2 - 1)
+    flat = e._scalp_exit(pos(price), coin, 101.0, 0.0)
+    old = e._scalp_exit(pos(price), coin, 100.0 + s.mayhem.max_hold_s + 1, 0.0)
+    check(bool(down and "stop" in down), f"scalp stop loss ({down})")
+    check(bool(up and "take profit" in up), f"scalp take profit ({up})")
+    check(flat is None, "flat scalp is held")
+    check(bool(old and "max hold" in old), f"scalp max hold ({old})")
+
+
 def main() -> None:
     with tempfile.TemporaryDirectory() as d:
         tmp = Path(d)
@@ -300,6 +335,7 @@ def main() -> None:
         e_engine(tmp)
         f_live_guard()
         g_gui(tmp)
+        h_rug_and_mayhem(tmp)
     if FAILS:
         print(f"\n{len(FAILS)} check(s) failed")
         sys.exit(1)
