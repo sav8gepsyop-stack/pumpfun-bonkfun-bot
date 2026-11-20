@@ -41,6 +41,13 @@ async def run(settings: AITraderSettings, *, gui: bool = True) -> None:
     settings.data_path.mkdir(parents=True, exist_ok=True)
     store = Store(settings.data_path / f"{settings.name}.duckdb")
     engine = Engine(settings, broker, store)
+    social = None
+    if settings.social.enabled:
+        from ai_trader.social import SocialTracker  # noqa: PLC0415
+
+        social = SocialTracker(settings.social)
+        await social.start()
+        engine.social = social
     await engine.start()
     token_infos = getattr(broker, "token_infos", None)
     feed = LiveFeed(
@@ -107,5 +114,7 @@ async def run(settings: AITraderSettings, *, gui: bool = True) -> None:
         feed.recorder.close()
     if runner is not None:
         await runner.cleanup()
+    if social is not None:
+        await social.close()
     await broker.close()
     store.close()

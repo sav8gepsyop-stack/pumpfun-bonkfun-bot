@@ -14,25 +14,40 @@ feed:
   nats_url: null        # e.g. "nats://127.0.0.1:4222" to publish events
 
 strategy:
+  # Tuned for medium-high risk: aim for +50% to +100% winners, accept more losers.
   min_age_s: 20         # watch a coin this long before judging it
   max_age_s: 600
   rescore_every_s: 10
   min_trades: 12
   min_unique_buyers: 8
-  buy_threshold: 68     # 0-100 score needed to buy
+  buy_threshold: 64     # 0-100 score needed to buy
+  # Trade every day: if fewer than min_buys_per_day buys today and none in the
+  # last fallback_after_s seconds, accept scores down to fallback_threshold.
+  # Rejects, rug checks and risk limits still apply. Tagged [fallback] in the report.
+  min_buys_per_day: 6
+  fallback_after_s: 2400
+  fallback_threshold: 56
   max_top10_share: 0.45
   max_dev_buy_share: 0.12
   reject_if_creator_sold: true
   reject_mayhem: true
   min_progress: 0.03
   max_progress: 0.85
-  stop_loss: 0.25       # sell everything at -25%
-  take_profit: 0.60     # at +60% sell half...
-  take_profit_sell_fraction: 0.5
-  trailing_stop: 0.22   # ...then sell the rest 22% below the peak
-  max_hold_s: 900
-  stale_after_s: 90
+  stop_loss: 0.30       # sell everything at -30%
+  take_profit: 0.50     # at +50% sell 40%...
+  take_profit_sell_fraction: 0.4
+  take_profit_2: 1.00   # ...at +100% sell half of what is left...
+  take_profit_2_sell_fraction: 0.5
+  trailing_stop: 0.25   # ...and the rest 25% below the peak
+  max_hold_s: 1800
+  stale_after_s: 120
   exit_on_creator_sell: true
+  # Pre-rug checks (see docs/ai-trader.md)
+  max_bundle_share: 0.20      # skip if snipers/bundle bought >20% in the first 3 s
+  max_early_sold_share: 0.50  # skip if those early wallets already sold half
+  max_rug_risk_entry: 0.55
+  exit_rug_risk: 0.70         # sell everything when rug risk climbs this high
+  exit_whale_sold_30s: 0.03   # or whales dump 3% of supply within 30 s
 
 risk:
   paper_bankroll_sol: 2.0
@@ -58,6 +73,19 @@ llm:
   max_calls_per_hour: 120
   timeout_s: 20
   langfuse: true
+
+social:                 # social media and trend signals (ai_trader/social.py)
+  enabled: true
+  weight: 0.25          # share of the final score from socials/trends
+  fetch_metadata: true  # read each coin's Twitter/Telegram/website links
+  ipfs_gateway: "https://pump.mypinata.cloud"
+  require_socials: false
+  hot_progress: 0.30    # coins past 30% of the curve define the live narratives
+  narrative_window_s: 3600
+  dexscreener: true     # trending/boosted Solana tokens, free, no key
+  dexscreener_poll_s: 60
+  x_bearer_token: "${X_BEARER_TOKEN}"   # optional X API key in .env
+  x_max_calls_per_15min: 50
 
 costs:                  # what paper fills charge, to match live
   fee_bps: 125

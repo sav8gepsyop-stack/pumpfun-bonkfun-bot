@@ -163,6 +163,16 @@ def build_app(
                 else None,
             },
             "stats": engine.stats,
+            "social": None
+            if engine.social is None
+            else {
+                **engine.social.stats,
+                "dex_ok": engine.social.dex_ok,
+                "dex_trending_words": sorted(
+                    engine.social.dex_words, key=engine.social.dex_words.get, reverse=True
+                )[:15],
+                "x_enabled": bool(settings.social.x_bearer_token),
+            },
             "risk": {
                 "paused": r.state.paused,
                 "killed": r.kill_requested(),

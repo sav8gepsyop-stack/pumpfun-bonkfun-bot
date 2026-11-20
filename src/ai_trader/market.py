@@ -18,6 +18,10 @@ from ai_trader.events import (
 #: Reserves of a fresh pump.fun curve.
 INITIAL_V_SOL = 30 * 10**9
 INITIAL_V_TOK = 1_073_000_000 * 10**6
+#: Buys this soon after launch count as snipes or a bundle.
+EARLY_WINDOW_S = 3.0
+#: A wallet holding at least this share of supply is a whale.
+WHALE_SHARE = 0.02
 
 
 @dataclass
@@ -26,6 +30,7 @@ class CoinState:
     created_at: float
     name: str = ""
     symbol: str = ""
+    uri: str = ""
     creator: str = ""
     is_mayhem: bool = False
     sol_quoted: bool = True
@@ -51,6 +56,14 @@ class CoinState:
     #: (ts, price, is_buy, sol) for momentum windows; bounded.
     recent: deque = field(default_factory=lambda: deque(maxlen=600))
     last_scored_at: float = 0.0
+    #: Pre-rug tracking. Wallets (not the creator) that bought in the first
+    #: EARLY_WINDOW_S seconds: snipers and bundles. What they bought and sold.
+    early_bought: dict[str, int] = field(default_factory=dict)
+    early_sold_tokens: int = 0
+    #: (ts, tokens) sold by wallets that held >= WHALE_SHARE of supply.
+    whale_sells: deque = field(default_factory=lambda: deque(maxlen=200))
+    #: (ts, top10_share) each time features were computed, for the trend.
+    top10_hist: deque = field(default_factory=lambda: deque(maxlen=120))
 
     @property
     def price(self) -> float:
@@ -111,6 +124,32 @@ class Features:
     creator_best_progress: float
     creator_rug_rate: float
     seconds_since_last_buy: float
+    #: Pre-rug signals.
+    #: Share of supply bought in the first seconds by wallets other than the creator.
+    bundle_share: float = 0.0
+    #: Share of those early tokens already sold (insiders taking profit).
+    early_sold_share: float = 0.0
+    #: Change in top-10 holder share over the last ~60 s (rising = accumulation
+    #: by a few wallets, often right before a dump).
+    top10_change_60s: float = 0.0
+    #: Share of supply sold by whales in the last 30 s.
+    whale_sold_30s: float = 0.0
+    #: Net SOL sold minus bought in the last 15 s (positive = selling pressure).
+    sell_pressure_15s: float = 0.0
+    #: 0..1 blend of the above; see rug_risk().
+    rug_risk: float = 0.0
+    #: Social and trend signals, filled by ai_trader.social when enabled.
+    has_twitter: bool = False
+    has_telegram: bool = False
+    has_website: bool = False
+    twitter_kind: str = "none"
+    narrative_score: float = 0.0
+    narrative_words: str = ""
+    dex_boosted: bool = False
+    x_mentions: int = -1
+    social_score: float = 0.0
+    #: True once the social tracker filled the fields above (never in backtests).
+    social_checked: bool = False
 
     def as_prompt_dict(self) -> dict:
         d = {
@@ -178,6 +217,7 @@ class MarketTracker:
                 created_at=evt.ts,
                 name=evt.name,
                 symbol=evt.symbol,
+                uri=evt.uri,
                 creator=evt.creator,
                 is_mayhem=evt.is_mayhem,
                 sol_quoted=evt.sol_quoted,
@@ -205,6 +245,7 @@ class MarketTracker:
         coin.peak_price = max(coin.peak_price, price)
         coin.last_trade_at = t.ts
         coin.trades_by_wallet[t.user] = coin.trades_by_wallet.get(t.user, 0) + 1
+        held_before = coin.holders.get(t.user, 0)
         if t.is_buy:
             coin.n_buys += 1
             coin.buy_sol += t.sol
@@ -213,6 +254,8 @@ class MarketTracker:
             coin.holders[t.user] = coin.holders.get(t.user, 0) + t.tokens
             if t.user == coin.creator and coin.n_buys == 1:
                 coin.dev_buy_tokens = t.tokens
+            elif t.user != coin.creator and t.ts - coin.created_at <= EARLY_WINDOW_S:
+                coin.early_bought[t.user] = coin.early_bought.get(t.user, 0) + t.tokens
         else:
             coin.n_sells += 1
             coin.sell_sol += t.sol
@@ -220,6 +263,10 @@ class MarketTracker:
             coin.holders[t.user] = max(0, coin.holders.get(t.user, 0) - t.tokens)
             if t.user == coin.creator:
                 coin.creator_sold = True
+            if t.user in coin.early_bought:
+                coin.early_sold_tokens += min(t.tokens, held_before)
+            if held_before >= WHALE_SHARE * TOTAL_SUPPLY:
+                coin.whale_sells.append((t.ts, min(t.tokens, held_before)))
         coin.recent.append((t.ts, price, t.is_buy, t.sol))
 
     def _evict(self, now: float) -> None:
@@ -254,6 +301,19 @@ class MarketTracker:
         launches, best, rug_rate = self.creators.stats(coin.creator)
         sym = coin.symbol.upper()
         clones = sum(1 for _, s in self._symbols if s == sym) - 1
+        early_total = sum(coin.early_bought.values())
+        bundle = early_total / TOTAL_SUPPLY
+        early_sold = coin.early_sold_tokens / early_total if early_total else 0.0
+        if not coin.top10_hist or now - coin.top10_hist[-1][0] >= 2:
+            coin.top10_hist.append((now, top10))
+        old = next((v for ts, v in coin.top10_hist if now - ts <= 60), top10)
+        top10_change = top10 - old
+        whale_sold = sum(n for ts, n in coin.whale_sells if now - ts <= 30) / TOTAL_SUPPLY
+        pressure = -sum(s if b else -s for ts, _, b, s in coin.recent if now - ts <= 15)
+        risk = rug_risk(
+            bundle, early_sold, top10_change, whale_sold, pressure,
+            coin.creator_sold, rug_rate, top10,
+        )
         return Features(
             mint=coin.mint,
             symbol=coin.symbol,
@@ -291,4 +351,47 @@ class MarketTracker:
             creator_best_progress=best,
             creator_rug_rate=rug_rate,
             seconds_since_last_buy=now - coin.last_buy_at if coin.last_buy_at else age,
+            bundle_share=bundle,
+            early_sold_share=early_sold,
+            top10_change_60s=top10_change,
+            whale_sold_30s=whale_sold,
+            sell_pressure_15s=pressure,
+            rug_risk=risk,
         )
+
+
+def rug_risk(
+    bundle_share: float,
+    early_sold_share: float,
+    top10_change_60s: float,
+    whale_sold_30s: float,
+    sell_pressure_15s: float,
+    creator_sold: bool,
+    creator_rug_rate: float,
+    top10_share: float,
+) -> float:
+    """0..1: how much this coin looks like it is about to be (or being) rugged.
+
+    Each term is the evidence for one known pattern: a bundled or sniped launch
+    holding a big bag, those early wallets starting to sell, a few wallets
+    soaking up supply, whales dumping, a wave of sells, and the creator's
+    record. The max of the strongest term and their combined weight is used so
+    one loud signal is enough to matter.
+    """
+
+    def clip(x: float) -> float:
+        return max(0.0, min(1.0, x))
+
+    terms = [
+        clip((bundle_share - 0.05) / 0.20),
+        clip(early_sold_share / 0.6) * clip(bundle_share / 0.05),
+        clip(top10_change_60s / 0.10),
+        clip(whale_sold_30s / 0.04),
+        clip(sell_pressure_15s / 3.0),
+        1.0 if creator_sold else 0.0,
+        clip(creator_rug_rate),
+        clip((top10_share - 0.30) / 0.30),
+    ]
+    weights = [1.0, 1.2, 0.8, 1.2, 0.8, 1.0, 0.8, 0.6]
+    blend = sum(w * t for w, t in zip(terms, weights, strict=True)) / sum(weights)
+    return clip(0.6 * max(terms) + 0.4 * blend * 2)

@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from utils.logger import get_logger
 
 if TYPE_CHECKING:
-    from ai_trader.config import LLMSettings, StrategySettings
+    from ai_trader.config import LLMSettings, SocialSettings, StrategySettings
     from ai_trader.market import Features
 
 logger = get_logger(__name__)
@@ -71,6 +71,15 @@ class HeuristicScorer:
             return f"creator rugged {f.creator_rug_rate:.0%} of {f.creator_launches} earlier coins"
         if f.drawdown_from_peak > 0.5:
             return f"already {f.drawdown_from_peak:.0%} off its peak"
+        # Pre-rug patterns.
+        if f.bundle_share > s.max_bundle_share:
+            return f"bundled launch: early wallets bought {f.bundle_share:.0%}"
+        if f.early_sold_share > s.max_early_sold_share and f.bundle_share > 0.03:
+            return f"early wallets already sold {f.early_sold_share:.0%}"
+        if f.whale_sold_30s > s.exit_whale_sold_30s:
+            return f"whales dumped {f.whale_sold_30s:.1%} of supply in 30s"
+        if f.rug_risk > s.max_rug_risk_entry:
+            return f"rug risk {f.rug_risk:.2f}"
         return None
 
     def score(self, f: Features) -> Score:
@@ -120,6 +129,7 @@ class HeuristicScorer:
         )
         add(6, creator, f"creator {f.creator_launches} prior launches")
         add(4, 1 - f.symbol_clones / 5, f"{f.symbol_clones} same-symbol clones")
+        add(8, 1 - f.rug_risk / 0.55, f"rug risk {f.rug_risk:.2f}")
 
         total_w = sum(w for w, _, _ in parts)
         value = 100 * sum(w * x for w, x, _ in parts) / total_w
@@ -246,8 +256,14 @@ class ClaudeScorer:
 
 
 class EnsembleScorer:
-    def __init__(self, strategy: StrategySettings, llm: LLMSettings) -> None:
+    def __init__(
+        self,
+        strategy: StrategySettings,
+        llm: LLMSettings,
+        social: SocialSettings | None = None,
+    ) -> None:
         self.heuristic = HeuristicScorer(strategy)
+        self.social = social if social is not None and social.enabled else None
         self.llm_settings = llm
         self.claude: ClaudeScorer | None = None
         if llm.enabled:
@@ -260,6 +276,25 @@ class EnsembleScorer:
 
     async def score(self, f: Features) -> Score:
         s = self.heuristic.score(f)
+        if not s.rejected and self.social is not None and f.social_checked:
+            if self.social.require_socials and not (
+                f.has_twitter or f.has_telegram or f.has_website
+            ):
+                return Score(0.0, rejected="no socials listed")
+            w = self.social.weight
+            s.value = (1 - w) * s.value + w * 100 * f.social_score
+            bits = [f"social {f.social_score:.2f}"]
+            if f.narrative_words:
+                bits.append(f"trend: {f.narrative_words}")
+            if f.has_twitter:
+                bits.append(f"X {f.twitter_kind}")
+            if f.has_telegram:
+                bits.append("TG")
+            if f.dex_boosted:
+                bits.append("DexScreener boosted")
+            if f.x_mentions >= 0:
+                bits.append(f"{f.x_mentions} tweets/1h")
+            s.reasons.append(("+ " if f.social_score >= 0.4 else "- ") + ", ".join(bits))
         if (
             s.rejected
             or self.claude is None
@@ -272,6 +307,6 @@ class EnsembleScorer:
         llm_value, note = result
         w = self.llm_settings.weight
         s.llm, s.llm_note = llm_value, note
-        s.value = (1 - w) * s.heuristic + w * llm_value
+        s.value = (1 - w) * s.value + w * llm_value
         s.reasons.append(f"Claude {llm_value:.0f}: {note[:120]}")
         return s

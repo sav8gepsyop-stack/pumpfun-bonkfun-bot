@@ -39,6 +39,7 @@ class Position:
     peak_price: float
     score: float
     tp_done: bool = False
+    tp2_done: bool = False
     realized_sol: float = 0.0
     #: An order for this coin is waiting to fill; no new exit decisions until then.
     busy: bool = False
@@ -73,7 +74,9 @@ class Engine:
         self.run_id = run_id or f"{self.mode}-{uuid.uuid4().hex[:8]}"
         self.tracker = MarketTracker()
         self.tracker.creators.load_rows(store.load_creators())
-        self.scorer = EnsembleScorer(settings.strategy, settings.llm)
+        self.scorer = EnsembleScorer(settings.strategy, settings.llm, settings.social)
+        #: Set by the runner for live feeds; backtests run without it.
+        self.social: Any = None
         self.risk = RiskManager(settings.risk, settings.kill_file)
         self.positions: dict[str, Position] = {}
         self.orders: list[Order] = []
@@ -87,6 +90,10 @@ class Engine:
         self.started_at = time.time()
         self.stats = {"events": 0, "coins": 0, "scored": 0, "rejected": 0, "bought": 0}
         self.recent_decisions: list[dict[str, Any]] = []
+        self._buy_day = ""
+        self._buys_today = 0
+        self._last_buy_at = 0.0
+        self._first_now = 0.0
 
     # ---------------------------------------------------------------- startup
     async def start(self) -> None:
@@ -131,8 +138,12 @@ class Engine:
         coin = self.tracker.apply(evt)
         if isinstance(evt, CreateEvt):
             self.stats["coins"] += 1
+            if coin is not None and self.social is not None:
+                self.social.on_create(coin)
         if coin is None:
             return
+        if self.social is not None and isinstance(evt, TradeEvt):
+            self.social.on_progress(coin, now)
         await self._process_orders(now)
         pos = self.positions.get(coin.mint)
         if pos is not None:
@@ -185,6 +196,8 @@ class Engine:
     async def _score_and_act(self, coin: CoinState, now: float) -> None:
         try:
             features = self.tracker.features(coin, now)
+            if self.social is not None:
+                features = await self.social.apply(coin, features, now)
             score = await self.scorer.score(features)
             self.stats["scored"] += 1
             if not self.inline_scoring:
@@ -193,17 +206,20 @@ class Engine:
                 self.stats["rejected"] += 1
                 self._decide(now, coin, score, "reject", score.rejected, features)
                 return
-            if score.value < self.s.strategy.buy_threshold:
+            threshold, fallback = self._threshold(now)
+            if score.value < threshold:
                 self._decide(
                     now, coin, score, "pass", f"score {score.value:.0f}", features
                 )
                 return
+            if fallback and score.value < self.s.strategy.buy_threshold:
+                score.reasons.insert(0, "[fallback] daily-activity entry")
             if coin.mint in self.positions:
                 return
             sol, why_not = self.risk.size(
                 now=now,
                 score=score.value,
-                threshold=self.s.strategy.buy_threshold,
+                threshold=threshold,
                 bankroll_sol=self._bankroll(),
                 open_count=len(self.positions)
                 + sum(o.side == "buy" for o in self.orders),
@@ -213,7 +229,8 @@ class Engine:
             if why_not:
                 self._decide(now, coin, score, "blocked", why_not, features)
                 return
-            self._decide(now, coin, score, "buy", f"{sol} SOL", features)
+            tag = " [fallback]" if score.value < self.s.strategy.buy_threshold else ""
+            self._decide(now, coin, score, "buy", f"{sol} SOL{tag}", features)
             self.orders.append(
                 Order(
                     now + self.latency,
@@ -225,9 +242,29 @@ class Engine:
                 )
             )
             self.risk.on_buy(now)
+            self._last_buy_at = now
+            self._buys_today += 1
             await self._process_orders(now)
         finally:
             self._scoring.discard(coin.mint)
+
+    def _threshold(self, now: float) -> tuple[float, bool]:
+        """The buy bar now, and whether the daily-activity fallback lowered it."""
+        st = self.s.strategy
+        if st.min_buys_per_day <= 0:
+            return st.buy_threshold, False
+        if not self._first_now:
+            self._first_now = now
+        today = time.strftime("%Y-%m-%d", time.gmtime(now))
+        if today != self._buy_day:
+            self._buy_day, self._buys_today = today, 0
+        if (
+            self._buys_today < st.min_buys_per_day
+            and now - self._last_buy_at >= st.fallback_after_s
+            and now - self._first_now >= min(st.fallback_after_s, 600)
+        ):
+            return min(st.fallback_threshold, st.buy_threshold), True
+        return st.buy_threshold, False
 
     def _decide(
         self,
@@ -275,10 +312,23 @@ class Engine:
             reason = "creator sold"
         elif change <= -st.stop_loss:
             reason = f"stop loss {change:+.0%}"
+        elif (risk := self._rug_exit(coin, now)) is not None:
+            reason = risk
         elif not pos.tp_done and change >= st.take_profit:
             reason, fraction = (
                 f"take profit {change:+.0%}",
                 st.take_profit_sell_fraction,
+            )
+        elif (
+            pos.tp_done
+            and not pos.tp2_done
+            and st.take_profit_2 > 0
+            and change >= st.take_profit_2
+        ):
+            pos.tp2_done = True
+            reason, fraction = (
+                f"take profit 2 {change:+.0%}",
+                st.take_profit_2_sell_fraction,
             )
         elif pos.tp_done and price <= pos.peak_price * (1 - st.trailing_stop):
             reason = f"trailing stop {price / pos.peak_price - 1:+.0%} from peak"
@@ -294,6 +344,18 @@ class Engine:
                 pos.tp_done = True
             self._sell(pos, now, tokens, reason)
             await self._process_orders(now)
+
+    def _rug_exit(self, coin: CoinState, now: float) -> str | None:
+        """Get out early when the coin starts to look like a rug in progress."""
+        st = self.s.strategy
+        f = self.tracker.features(coin, now)
+        if f.whale_sold_30s >= st.exit_whale_sold_30s:
+            return f"pre-rug: whales sold {f.whale_sold_30s:.1%} of supply in 30s"
+        if f.early_sold_share >= st.max_early_sold_share and f.bundle_share >= 0.05:
+            return f"pre-rug: early wallets sold {f.early_sold_share:.0%} of their bag"
+        if f.rug_risk >= st.exit_rug_risk:
+            return f"pre-rug: rug risk {f.rug_risk:.2f}"
+        return None
 
     def _sell(self, pos: Position, now: float, tokens_raw: int, reason: str) -> None:
         pos.busy = True

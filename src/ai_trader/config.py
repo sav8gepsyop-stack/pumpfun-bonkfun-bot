@@ -64,10 +64,31 @@ class StrategySettings(_Strict):
     take_profit: float = 0.60
     take_profit_sell_fraction: float = 0.5
     trailing_stop: float = 0.22
+    #: Keep trading every day: when fewer than min_buys_per_day buys have been
+    #: made today and none in the last fallback_after_s, the bar drops to
+    #: fallback_threshold. Hard rejects, rug checks and risk limits still apply.
+    #: Those buys are tagged [fallback] so the report can judge them apart.
+    min_buys_per_day: int = 0
+    fallback_after_s: float = 3600
+    fallback_threshold: float = 55
+    #: Optional second take-profit level: at this gain, sell this share of what
+    #: is left. 0 turns it off.
+    take_profit_2: float = 0.0
+    take_profit_2_sell_fraction: float = 0.5
     max_hold_s: float = 900
     #: Sell if nobody has bought for this long and the position is under water.
     stale_after_s: float = 90
     exit_on_creator_sell: bool = True
+    #: Pre-rug checks. Entry: skip a coin whose launch was bundled/sniped this
+    #: heavily, whose early wallets already sold this much, or whose combined
+    #: rug_risk (0..1) is above max_rug_risk_entry.
+    max_bundle_share: float = 0.20
+    max_early_sold_share: float = 0.50
+    max_rug_risk_entry: float = 0.55
+    #: Exit: sell everything when rug_risk reaches this while holding, or when
+    #: whales dump this share of supply within 30 s.
+    exit_rug_risk: float = 0.70
+    exit_whale_sold_30s: float = 0.03
 
 
 class RiskSettings(_Strict):
@@ -135,6 +156,30 @@ class LLMSettings(_Strict):
     langfuse: bool = True
 
 
+class SocialSettings(_Strict):
+    """Social media and trend signals (see ai_trader/social.py)."""
+
+    enabled: bool = True
+    #: Share of the final score that comes from the social/trend score (0..1).
+    weight: float = 0.25
+    #: Fetch each new coin's metadata JSON for its Twitter/Telegram/website.
+    fetch_metadata: bool = True
+    #: Gateway used for ipfs URIs (ipfs.io rate-limits hard).
+    ipfs_gateway: str = "https://pump.mypinata.cloud"
+    metadata_concurrency: int = 6
+    http_timeout_s: float = 6
+    #: Skip coins with no Twitter, Telegram or website at all.
+    require_socials: bool = False
+    #: A coin counts as "hot" (its name words become a narrative) at this curve progress.
+    hot_progress: float = 0.30
+    narrative_window_s: float = 3600
+    dexscreener: bool = True
+    dexscreener_poll_s: float = 60
+    #: Optional X API bearer token for tweet counts; empty turns X off.
+    x_bearer_token: str = "${X_BEARER_TOKEN}"
+    x_max_calls_per_15min: int = 50
+
+
 class CostSettings(_Strict):
     """What the paper broker charges, to match what a live trade costs."""
 
@@ -162,6 +207,7 @@ class AITraderSettings(_Strict):
     strategy: StrategySettings = Field(default_factory=StrategySettings)
     risk: RiskSettings = Field(default_factory=RiskSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
+    social: SocialSettings = Field(default_factory=SocialSettings)
     costs: CostSettings = Field(default_factory=CostSettings)
     gui: GuiSettings = Field(default_factory=GuiSettings)
 
@@ -169,6 +215,8 @@ class AITraderSettings(_Strict):
     def _sane(self) -> AITraderSettings:
         if not 0 < self.strategy.stop_loss < 1:
             raise ValueError("strategy.stop_loss must be in (0, 1)")
+        if not 0 <= self.social.weight <= 1:
+            raise ValueError("social.weight must be in [0, 1]")
         if not 0 <= self.llm.weight <= 1:
             raise ValueError("llm.weight must be in [0, 1]")
         return self

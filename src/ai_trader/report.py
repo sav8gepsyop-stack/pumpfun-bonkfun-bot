@@ -60,7 +60,10 @@ def compute(store: Store, run_id: str, start_cash: float) -> dict[str, Any]:
         [run_id],
     )
     buy_scores = store.frame(
-        "SELECT mint, max(score) AS score FROM decisions WHERE run_id = ? AND action = 'buy' GROUP BY mint",
+        "SELECT mint, max(score) AS score, "
+        "bool_or(reason LIKE '%fallback%') AS fallback, "
+        "max(TRY_CAST(json_extract(features, '$.social_score') AS DOUBLE)) AS social "
+        "FROM decisions WHERE run_id = ? AND action = 'buy' GROUP BY mint",
         [run_id],
     )
     rt = _round_trips(trades)
@@ -126,6 +129,35 @@ def compute(store: Store, run_id: str, start_cash: float) -> dict[str, Any]:
         )
         .sort("bucket")
         .to_dicts()
+    )
+    # Do the daily-activity (fallback) entries and the social signals pay?
+    def split(col: pl.Expr, name: str) -> list[dict[str, Any]]:
+        return (
+            scored.with_columns(col.alias(name))
+            .group_by(name)
+            .agg(
+                pl.len().alias("n"),
+                pl.col("pnl").sum().alias("pnl"),
+                pl.col("ret").mean().alias("avg_ret"),
+                (pl.col("pnl") > 0).mean().alias("win_rate"),
+            )
+            .sort(name)
+            .to_dicts()
+        )
+
+    out["by_entry"] = split(
+        pl.when(pl.col("fallback").fill_null(False))
+        .then(pl.lit("fallback"))
+        .otherwise(pl.lit("normal")),
+        "entry",
+    )
+    out["by_social"] = split(
+        pl.when(pl.col("social").is_null())
+        .then(pl.lit("n/a"))
+        .when(pl.col("social") >= 0.4)
+        .then(pl.lit("strong (>=0.4)"))
+        .otherwise(pl.lit("weak (<0.4)")),
+        "social_bucket",
     )
     out["trades"] = rt.select(
         "symbol", "mint", "opened", "cost", "pnl", "ret", "hold_s", "exit_reason"
@@ -219,6 +251,22 @@ def write(report: dict[str, Any], out_dir: Path, title: str) -> dict[str, Path]:
             f"| {_fmt(r['bucket'])} | {r['n']} | {_fmt(r['avg_ret'], True)} | {_fmt(r['win_rate'], True)} |"
             for r in report["by_score"]
         ]
+    for key, label, col in (
+        ("by_entry", "By entry type (do forced daily trades pay?)", "entry"),
+        ("by_social", "By social/trend score (do the signals help?)", "social_bucket"),
+    ):
+        if report.get(key):
+            lines += [
+                "",
+                f"## {label}",
+                "",
+                "| Group | Trades | P&L SOL | Avg return | Win rate |",
+                "|---|---|---|---|---|",
+            ]
+            lines += [
+                f"| {r[col]} | {r['n']} | {r['pnl']:.4f} | {_fmt(r['avg_ret'], True)} | {_fmt(r['win_rate'], True)} |"
+                for r in report[key]
+            ]
     paths["md"].write_text("\n".join(lines) + "\n")
     paths["html"].write_text(_html(report, title, "\n".join(lines)))
     return paths

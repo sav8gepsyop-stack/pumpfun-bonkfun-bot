@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import gzip
+import zlib
 import json
 import time
 from pathlib import Path
@@ -39,12 +40,17 @@ PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 
 
 class Recorder:
-    """Appends events to data/feed/<UTC date>.jsonl.gz, one file per day."""
+    """Writes events to data/feed/<UTC date>_<start time>.jsonl.gz.
+
+    One file per day per run: a run that is killed leaves a truncated gzip,
+    and appending to it would make the rest of that file unreadable.
+    """
 
     def __init__(self, directory: Path) -> None:
         self.dir = directory
         self.dir.mkdir(parents=True, exist_ok=True)
         self._day = ""
+        self._started = time.strftime("%H%M%S", time.gmtime())
         self._fh: gzip.GzipFile | None = None
         self._n = 0
 
@@ -53,7 +59,7 @@ class Recorder:
         if day != self._day:
             self.close()
             self._day = day
-            self._fh = gzip.open(self.dir / f"{day}.jsonl.gz", "at")
+            self._fh = gzip.open(self.dir / f"{day}_{self._started}.jsonl.gz", "at")
         assert self._fh is not None
         self._fh.write(json.dumps(to_dict(evt), separators=(",", ":")) + "\n")
         self._n += 1
@@ -71,10 +77,18 @@ def replay(paths: list[Path]) -> Iterator[Event]:
     for path in sorted(paths):
         opener = gzip.open if path.suffix == ".gz" else open
         with opener(path, "rt") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    yield from_dict(json.loads(line))
+            try:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        try:
+                            yield from_dict(json.loads(line))
+                        except ValueError:
+                            break  # a half-written last line
+            except (EOFError, OSError, zlib.error):
+                # A run that was killed (or is still writing) leaves the gzip
+                # unfinished; use what was readable.
+                logger.warning(f"{path.name} ends early (unfinished recording)")
 
 
 class _TokenInfoParser:

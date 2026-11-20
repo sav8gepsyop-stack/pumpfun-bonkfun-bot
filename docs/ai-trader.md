@@ -101,6 +101,46 @@ localhost, set `gui.access_token` and open `/?token=...`.
 | `reserve_sol` | 0.05 | Never spend below this balance (fees, rent) |
 | kill switch | | `data/KILL`, the dashboard button or `ai_trader kill` |
 
+## Social and trend signals
+
+`social:` in the config. Each new coin's metadata JSON is read for its X,
+Telegram and website links (an X *profile* counts more than a link to someone
+else's tweet). Narratives come from two places: words in the names of
+pump.fun coins that passed `hot_progress` of the curve in the last hour, and
+words in DexScreener's boosted and new-profile Solana tokens that are up over
+the last hour. A coin that is itself boosted on DexScreener gets credit too.
+With `X_BEARER_TOKEN` in `.env`, recent tweet counts for the ticker or mint are
+added (X API, rate limited). These blend into the score by `social.weight` and
+never override a hard reject. The report splits trades by social score so you
+can see whether they help.
+
+## Pre-rug checks
+
+Computed from the trade stream, for entries and for open positions:
+
+| Signal | Meaning |
+|---|---|
+| `bundle_share` | supply bought by wallets other than the creator in the first 3 s (snipers, bundles) |
+| `early_sold_share` | how much of that early bag is already sold |
+| `top10_change_60s` | top-10 share rising fast (a few wallets soaking up supply) |
+| `whale_sold_30s` | supply sold by wallets holding 2%+ in the last 30 s |
+| `sell_pressure_15s` | net SOL sold in the last 15 s |
+| `rug_risk` | 0..1 blend of the above plus creator sold and creator history |
+
+Entries are skipped above `max_bundle_share`, `max_early_sold_share` or
+`max_rug_risk_entry`. A held position is sold at once when whales dump
+`exit_whale_sold_30s` of supply, the early wallets sell their bag, or
+`rug_risk` reaches `exit_rug_risk`. Not covered (they need an RPC call per
+wallet): wallets funded from one source, and transfers out of the creator wallet.
+
+## Trading every day
+
+`min_buys_per_day` / `fallback_after_s` / `fallback_threshold`: when the bot
+has bought fewer than `min_buys_per_day` coins today and nothing for
+`fallback_after_s`, the bar drops to `fallback_threshold`. Rejects, rug checks
+and every risk limit still apply. Those buys are tagged `[fallback]` and the
+report shows them apart, so you can see whether they pay.
+
 ## Paper vs. live
 
 Paper fills use the exact pump.fun curve formula (it reproduces recorded
