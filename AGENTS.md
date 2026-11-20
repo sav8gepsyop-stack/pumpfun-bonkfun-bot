@@ -14,6 +14,7 @@ Before you change files in these paths, read the doc next to them.
 | `src/trading/`, `src/cleanup/` | [docs/trading-lifecycle.md](docs/trading-lifecycle.md): positions, the positions file, shutdown, cleanup, PnL |
 | `src/trading/checks/`, `src/trading/intake.py` | [docs/pre-buy-checks.md](docs/pre-buy-checks.md) |
 | `cookbook/` | [docs/cookbook-conventions.md](docs/cookbook-conventions.md) |
+| `src/ai_trader/`, `config/ai-trader.yaml` | [docs/ai-trader.md](docs/ai-trader.md): the AI trader, paper/live brokers, risk limits, dashboard |
 | `tests/` | [docs/regression-tests.md](docs/regression-tests.md): which verifiers your change needs |
 
 ## Ground rules

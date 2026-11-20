@@ -28,6 +28,18 @@ For a step-by-step guide, see [Solana: Creating a trading and sniping pump.fun b
 
 ---
 
+## AI trader (paper trading by default)
+
+`ai_trader` is an autonomous trader built on this bot's engine: it follows every pump.fun launch and trade live, scores each young coin from its on-chain behaviour (buyer breadth, net inflow, momentum, holder concentration, creator history, wash-trading signs), optionally asks Claude for a second opinion, and buys only within hard risk limits (position size, total exposure, daily loss, losing streaks, kill switch). It ships in **paper mode**: live market data, simulated fills, no SOL spent. A local dashboard shows the bot wallet's address, QR code and balance with a Deposit with Phantom button, plus equity, positions, every AI decision and the risk controls.
+
+```bash
+ai_trader demo     # dashboard on an invented market, nothing to set up
+ai_trader run      # paper trade the live market; dashboard on http://127.0.0.1:8787
+ai_trader report   # how the paper run did, with a go / no-go verdict
+```
+
+**Most pump.fun coins go to zero and no strategy guarantees a profit.** Paper trade first and read the report before going live. Setup, strategy, limits and the steps to enable live mode: [docs/ai-trader.md](docs/ai-trader.md).
+
 ## Getting started
 
 ### 1. Prerequisites

@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Trader Dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://unpkg.com/@solana/web3.js@1.98.0/lib/index.iife.min.js"></script>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--fg:#14171c;--mute:#5f6b7a;--line:#e3e6ea;--up:#16a34a;--down:#dc2626;--acc:#2563eb;--warn:#b45309}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mute:#8b949e;--line:#262c36;--up:#3fb950;--down:#f85149;--acc:#58a6ff;--warn:#d29922}}
+:root[data-theme="dark"]{--bg:#0e1116;--card:#161b22;--fg:#e6edf3;--mute:#8b949e;--line:#262c36;--up:#3fb950;--down:#f85149;--acc:#58a6ff;--warn:#d29922}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 system-ui,-apple-system,Segoe UI,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;padding:14px 16px;border-bottom:1px solid var(--line);background:var(--card)}
+h1{font-size:18px;margin:0}h2{font-size:15px;margin:0 0 10px}
+.badge{padding:2px 8px;border-radius:99px;font-weight:600;font-size:12px}
+.paper{background:#16a34a22;color:var(--up)}.live{background:#dc262622;color:var(--down)}
+.mute{color:var(--mute)}.up{color:var(--up)}.down{color:var(--down)}.warn{color:var(--warn)}
+main{max-width:1200px;margin:0 auto;padding:16px;display:grid;gap:16px}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px;min-width:0}
+.stat .v{font-size:22px;font-weight:650}.stat .l{color:var(--mute);font-size:12px}
+.two{display:grid;gap:16px;grid-template-columns:1fr}@media(min-width:900px){.two{grid-template-columns:1fr 1fr}}
+button{font:inherit;padding:7px 12px;border-radius:8px;border:1px solid var(--line);background:var(--card);color:var(--fg);cursor:pointer}
+button.primary{background:var(--acc);border-color:var(--acc);color:#fff}button.danger{background:var(--down);border-color:var(--down);color:#fff}
+input{font:inherit;padding:6px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg);width:100%}
+.addr{font-family:ui-monospace,monospace;word-break:break-all;background:var(--bg);padding:8px;border-radius:8px;border:1px solid var(--line)}
+#qr{background:#fff;padding:8px;border-radius:8px;width:max-content}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.limits{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}
+.limits label{font-size:12px;color:var(--mute)}
+.tbl{overflow-x:auto}table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}th{color:var(--mute);font-weight:500}
+#chart{height:280px}a{color:var(--acc)}
+.note{font-size:12px;color:var(--mute)}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="name">AI Trader</h1><span id="mode" class="badge">…</span>
+  <span id="feed" class="mute">feed: …</span><span id="uptime" class="mute"></span>
+  <span id="halt" class="warn"></span>
+</header>
+<main>
+  <section class="grid">
+    <div class="card stat"><div class="l">Equity</div><div class="v" id="eq">–</div><div class="l" id="equsd"></div></div>
+    <div class="card stat"><div class="l">Total P&amp;L</div><div class="v" id="pnl">–</div><div class="l" id="pnlpct"></div></div>
+    <div class="card stat"><div class="l">Realized today</div><div class="v" id="today">–</div><div class="l" id="tradesToday"></div></div>
+    <div class="card stat"><div class="l">Open positions</div><div class="v" id="open">–</div><div class="l" id="openval"></div></div>
+    <div class="card stat"><div class="l">Coins seen / scored / bought</div><div class="v" id="funnel">–</div><div class="l" id="ai"></div></div>
+  </section>
+
+  <section class="two">
+    <div class="card">
+      <h2>Fund the trading wallet</h2>
+      <div id="noaddr" class="note" hidden>No wallet configured. Put the bot wallet's key in <code>.env</code> as <code>SOLANA_PRIVATE_KEY</code> (create one with <code>pump_bot_wallet</code>), then restart. This page only ever sees the public address.</div>
+      <div id="fund" hidden>
+        <div class="row" style="align-items:flex-start;gap:16px">
+          <div id="qr"></div>
+          <div style="flex:1;min-width:200px">
+            <div class="note">Send SOL to this address from your own wallet or exchange (Solana network only):</div>
+            <div class="addr" id="addr"></div>
+            <div class="row" style="margin-top:8px"><button id="copy">Copy address</button><a id="solscan" target="_blank" rel="noopener">View on Solscan</a></div>
+            <div style="margin-top:8px">Wallet balance: <b id="bal">–</b> <span class="mute" id="balusd"></span></div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <input id="amt" type="number" min="0.01" step="0.01" value="0.25" style="max-width:120px" aria-label="Amount in SOL"> SOL
+          <button class="primary" id="phantom">Deposit with Phantom</button>
+        </div>
+        <div class="note" id="depmsg">Phantom shows the transfer for you to approve; nothing moves until you sign it there. To take money out, run <code>ai_trader withdraw</code>.</div>
+      </div>
+      <div id="papernote" class="note" style="margin-top:8px" hidden>Paper mode: trades are simulated against the live market and no SOL is spent. Funding the wallet now just gets it ready for live mode.</div>
+    </div>
+
+    <div class="card">
+      <h2>Risk controls</h2>
+      <div class="row">
+        <button id="pause">Pause buying</button>
+        <button class="danger" id="kill">Kill switch: stop &amp; sell all</button>
+        <button id="unkill" hidden>Re-arm</button>
+      </div>
+      <p class="note">Pause stops new buys and keeps managing open positions. Kill sells everything at once and blocks new buys until re-armed (it also creates <code>data/KILL</code>).</p>
+      <form id="limits" class="limits"></form>
+      <div class="row" style="margin-top:8px"><button class="primary" id="savelimits">Save limits</button><span id="limmsg" class="note"></span></div>
+    </div>
+  </section>
+
+  <section class="card"><h2>Equity</h2><div id="chart"></div></section>
+
+  <section class="card"><h2>Open positions</h2><div class="tbl"><table id="pos"></table></div></section>
+  <section class="two">
+    <div class="card"><h2>Latest AI decisions</h2><div class="tbl"><table id="dec"></table></div></div>
+    <div class="card"><h2>Trades</h2><div class="tbl"><table id="trades"></table></div></div>
+  </section>
+</main>
+<script>
+const TOKEN = new URLSearchParams(location.search).get('token');
+const H = TOKEN ? {'X-Token': TOKEN} : {};
+const api = (p, opt={}) => fetch(p, {...opt, headers: {...H, 'Content-Type':'application/json', ...(opt.headers||{})}});
+const $ = id => document.getElementById(id);
+const sol = (x, d=4) => x == null ? '–' : `${x.toFixed(d)} SOL`;
+const usd = (x, p) => (x == null || p == null) ? '' : `≈ $${(x*p).toLocaleString(undefined,{maximumFractionDigits:2})}`;
+const cls = x => x > 0 ? 'up' : x < 0 ? 'down' : '';
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let address = null, qrDone = false, limitsDrawn = false, chart, series;
+
+function drawLimits(l) {
+  const f = $('limits'); f.innerHTML = '';
+  for (const [k, v] of Object.entries(l)) {
+    f.insertAdjacentHTML('beforeend', `<div><label for="l_${k}">${k.replaceAll('_',' ')}</label><input id="l_${k}" name="${k}" type="number" step="any" value="${v}"></div>`);
+  }
+  limitsDrawn = true;
+}
+
+async function refresh() {
+  let s;
+  try { s = await (await api('/api/status')).json(); } catch { $('feed').textContent = 'dashboard lost the bot'; return; }
+  $('name').textContent = s.name;
+  const m = $('mode'); m.textContent = s.mode.toUpperCase(); m.className = 'badge ' + s.mode;
+  $('feed').textContent = s.feed.demo ? 'demo: invented market' : s.feed.connected ? `feed live${s.feed.last_event_age_s != null ? `, last event ${s.feed.last_event_age_s.toFixed(0)}s ago` : ''}` : 'feed connecting…';
+  $('uptime').textContent = `up ${(s.uptime_s/60).toFixed(0)} min`;
+  const r = s.risk;
+  $('halt').textContent = r.killed ? 'KILLED' : r.paused ? 'PAUSED' : r.halted_reason || (r.cooldown_left_s > 0 ? `cooldown ${Math.ceil(r.cooldown_left_s/60)} min` : '');
+  $('eq').textContent = sol(s.equity.equity_sol);
+  $('equsd').textContent = usd(s.equity.equity_sol, s.sol_usd);
+  if (s.start_bankroll_sol) {
+    const p = s.equity.equity_sol - s.start_bankroll_sol;
+    $('pnl').textContent = (p>=0?'+':'') + sol(p); $('pnl').className = 'v ' + cls(p);
+    $('pnlpct').textContent = `${(100*p/s.start_bankroll_sol).toFixed(1)}% on ${s.start_bankroll_sol} SOL paper bankroll`;
+  } else { $('pnl').textContent = 'see trades'; }
+  $('today').textContent = sol(r.realized_today_sol); $('today').className = 'v ' + cls(r.realized_today_sol);
+  $('tradesToday').textContent = `${r.trades_today} buys today`;
+  $('open').textContent = s.positions.length; $('openval').textContent = `worth ${sol(s.equity.open_value_sol)}`;
+  $('funnel').textContent = `${s.stats.coins} / ${s.stats.scored} / ${s.stats.bought}`;
+  $('ai').textContent = s.llm.enabled ? `Claude scoring on (${s.llm.model})` : 'heuristic scoring (Claude off)';
+  $('pause').textContent = r.paused ? 'Resume buying' : 'Pause buying';
+  $('unkill').hidden = !r.killed;
+  if (!limitsDrawn) drawLimits(r.limits);
+
+  address = s.address;
+  $('papernote').hidden = s.mode !== 'paper';
+  $('noaddr').hidden = !!address; $('fund').hidden = !address;
+  if (address) {
+    $('addr').textContent = address;
+    $('solscan').href = `https://solscan.io/account/${address}`;
+    $('bal').textContent = sol(s.wallet_balance_sol); $('balusd').textContent = usd(s.wallet_balance_sol, s.sol_usd);
+    if (!qrDone && window.QRCode) { new QRCode($('qr'), {text: `solana:${address}`, width: 148, height: 148}); qrDone = true; }
+  }
+
+  $('pos').innerHTML = '<tr><th>Coin</th><th>Cost</th><th>Value</th><th>P&L</th><th>Curve</th><th>Score</th><th>Why</th></tr>' +
+    (s.positions.map(p => `<tr><td><a target="_blank" rel="noopener" href="https://pump.fun/coin/${esc(p.mint)}">${esc(p.symbol)}</a></td><td>${p.cost_sol}</td><td>${p.value_sol}</td><td class="${cls(p.pnl_pct)}">${p.pnl_pct}%${p.tp_done?' (TP hit)':''}</td><td>${p.progress ?? '–'}%</td><td>${p.score}</td><td class="mute">${esc((p.reasons||[]).slice(0,3).join(' · '))}</td></tr>`).join('') || '<tr><td colspan=7 class="mute">No open positions</td></tr>');
+  $('dec').innerHTML = '<tr><th>Time</th><th>Coin</th><th>Score</th><th>Action</th><th>Why</th></tr>' +
+    s.decisions.map(d => `<tr><td>${new Date(d.ts*1000).toLocaleTimeString()}</td><td>${esc(d.symbol)}</td><td>${d.score}</td><td class="${d.action==='buy'?'up':''}">${esc(d.action)}</td><td class="mute">${esc(d.reason)}</td></tr>`).join('');
+}
+
+async function refreshSlow() {
+  const t = await (await api('/api/trades')).json();
+  $('trades').innerHTML = '<tr><th>Time</th><th>Coin</th><th>Side</th><th>SOL</th><th>P&L</th><th>Reason</th></tr>' +
+    (t.map(x => `<tr><td>${new Date(x.ts*1000).toLocaleTimeString()}</td><td>${esc(x.symbol)}</td><td>${x.side}</td><td>${x.sol.toFixed(4)}</td><td class="${cls(x.pnl_sol)}">${x.pnl_sol==null?'':x.pnl_sol.toFixed(4)}</td><td class="mute">${x.signature?`<a target="_blank" rel="noopener" href="https://solscan.io/tx/${esc(x.signature)}">tx</a> `:''}${esc((x.reason||'').slice(0,60))}</td></tr>`).join('') || '<tr><td colspan=6 class="mute">No trades yet</td></tr>');
+  const e = await (await api('/api/equity')).json();
+  if (window.LightweightCharts && !chart) {
+    const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    chart = LightweightCharts.createChart($('chart'), {autoSize: true, layout:{background:{color:'transparent'}, textColor: dark?'#8b949e':'#5f6b7a'}, grid:{vertLines:{visible:false}, horzLines:{color: dark?'#262c36':'#e3e6ea'}}, timeScale:{timeVisible:true}});
+    series = chart.addAreaSeries({lineColor:'#2563eb', topColor:'rgba(37,99,235,.25)', bottomColor:'rgba(37,99,235,0)'});
+  }
+  if (series && e.length) { series.setData(e); chart.timeScale().fitContent(); }
+}
+
+$('copy').onclick = () => navigator.clipboard.writeText(address);
+$('pause').onclick = async () => { const paused = $('pause').textContent.startsWith('Resume'); await api(paused ? '/api/resume' : '/api/pause', {method:'POST'}); refresh(); };
+$('kill').onclick = async () => { if (confirm('Sell every position now and stop buying?')) { await api('/api/kill', {method:'POST'}); refresh(); } };
+$('unkill').onclick = async () => { await api('/api/unkill', {method:'POST'}); refresh(); };
+$('savelimits').onclick = async (ev) => {
+  ev.preventDefault();
+  const body = {}; for (const i of $('limits').querySelectorAll('input')) body[i.name] = Number(i.value);
+  const r = await api('/api/limits', {method:'POST', body: JSON.stringify(body)});
+  $('limmsg').textContent = r.ok ? 'Saved for this run (edit the YAML to keep them).' : 'Rejected: ' + await r.text();
+};
+$('phantom').onclick = async () => {
+  const msg = $('depmsg');
+  const provider = window.phantom?.solana || (window.solana?.isPhantom ? window.solana : null);
+  if (!provider) { msg.innerHTML = 'Phantom not found. Install it from <a href="https://phantom.app" target="_blank" rel="noopener">phantom.app</a>, or send SOL to the address above from any wallet.'; return; }
+  const amount = Number($('amt').value);
+  if (!(amount > 0)) { msg.textContent = 'Enter an amount above 0.'; return; }
+  try {
+    const { publicKey } = await provider.connect();
+    const { blockhash } = await (await api('/api/blockhash')).json();
+    const w3 = window.solanaWeb3;
+    const tx = new w3.Transaction({ feePayer: publicKey, recentBlockhash: blockhash }).add(
+      w3.SystemProgram.transfer({ fromPubkey: publicKey, toPubkey: new w3.PublicKey(address), lamports: Math.round(amount * 1e9) }));
+    const { signature } = await provider.signAndSendTransaction(tx);
+    msg.innerHTML = `Sent. <a target="_blank" rel="noopener" href="https://solscan.io/tx/${esc(signature)}">View transaction</a>; the balance updates in a few seconds.`;
+  } catch (e) { msg.textContent = 'Deposit not sent: ' + (e?.message || e); }
+};
+refresh(); refreshSlow();
+setInterval(refresh, 3000); setInterval(refreshSlow, 15000);
+</script>
+</body>
+</html>
